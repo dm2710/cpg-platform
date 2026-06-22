@@ -1,0 +1,106 @@
+:root {
+  /* ── Color: warm ledger-paper neutrals + deep ink + single harvest-amber accent ── */
+  --ink-950: #14110d;
+  --ink-900: #1d1812;
+  --ink-800: #2a2319;
+  --ink-700: #3d3326;
+  --ink-600: #564934;
+  --ink-500: #756347;
+
+  --paper-50: #fbf8f2;
+  --paper-100: #f5efe2;
+  --paper-200: #ece2cd;
+  --paper-300: #ddccab;
+
+  --amber-400: #d99a3c;
+  --amber-500: #c1822a;
+  --amber-600: #a06a1f;
+
+  --teal-500: #3d7a6e;
+  --teal-600: #2e5e54;
+
+  --rose-500: #b54c44;
+  --rose-600: #963c36;
+
+  --green-500: #4f7c43;
+  --green-600: #3d6133;
+
+  /* Semantic */
+  --bg-app: var(--paper-50);
+  --bg-surface: #ffffff;
+  --bg-surface-raised: #ffffff;
+  --bg-sidebar: var(--ink-950);
+  --border-subtle: var(--paper-300);
+  --border-strong: var(--ink-600);
+
+  --text-primary: var(--ink-900);
+  --text-secondary: var(--ink-600);
+  --text-tertiary: var(--ink-500);
+  --text-on-dark: var(--paper-100);
+  --text-on-dark-dim: #9a9082;
+
+  --accent: var(--amber-500);
+  --accent-strong: var(--amber-600);
+  --positive: var(--teal-600);
+  --negative: var(--rose-600);
+
+  /* Type */
+  --font-display: 'Fraunces', Georgia, serif;
+  --font-ui: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-mono: 'JetBrains Mono', 'SF Mono', Consolas, monospace;
+
+  /* Layout */
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 16px;
+  --sidebar-width: 248px;
+  --shadow-card: 0 1px 2px rgba(20, 17, 13, 0.04), 0 1px 8px rgba(20, 17, 13, 0.03);
+  --shadow-popover: 0 8px 24px rgba(20, 17, 13, 0.14), 0 2px 6px rgba(20, 17, 13, 0.08);
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg-app);
+  color: var(--text-primary);
+  font-family: var(--font-ui);
+  -webkit-font-smoothing: antialiased;
+}
+
+#root {
+  min-height: 100vh;
+}
+
+a { color: inherit; }
+
+button {
+  font-family: inherit;
+}
+
+::selection {
+  background: var(--amber-400);
+  color: var(--ink-950);
+}
+
+/* focus visibility */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* scrollbar */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border-subtle); border-radius: 8px; }
+::-webkit-scrollbar-thumb:hover { background: var(--ink-500); }
+
+.mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    transition-duration: 0.001ms !important;
+  }
+}

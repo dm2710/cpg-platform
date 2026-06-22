@@ -1,0 +1,39 @@
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  batch:
+    timeout: 5s
+    send_batch_size: 1024
+
+exporters:
+  # Exposes a /metrics endpoint that Prometheus scrapes (see
+  # observability/prometheus/prometheus.yml job "otel-collector").
+  prometheus:
+    endpoint: 0.0.0.0:8889
+    namespace: cpg
+
+  # No dedicated trace backend (Tempo/Jaeger) is bundled in this stack
+  # to keep the compose footprint small -- traces are logged to the
+  # collector's own stdout instead, which is enough to confirm tracing
+  # is wired correctly end-to-end and to inspect individual traces
+  # during development. Swap this for an otlp exporter pointed at a
+  # real backend in a production deployment.
+  debug:
+    verbosity: basic
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [debug]
+    metrics:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [prometheus]

@@ -1,0 +1,29 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential libpq-dev gcc g++ postgresql-client curl \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN pip install --no-cache-dir --upgrade pip wheel
+
+RUN pip install --no-cache-dir numpy==1.26.4 scipy==1.14.1
+
+COPY pyproject.toml .
+RUN pip install --no-cache-dir ".[dev]"
+
+# Install setuptools AFTER everything else so it cannot be removed or
+# downgraded by the resolver. opentelemetry-instrumentation needs
+# pkg_resources which lives inside setuptools.
+RUN pip install --no-cache-dir "setuptools>=68"
+
+COPY docker/wait-for-postgres.sh /usr/local/bin/wait-for-postgres.sh
+RUN chmod +x /usr/local/bin/wait-for-postgres.sh
+
+COPY . .
+
+EXPOSE 8000
+
+ENTRYPOINT ["/usr/local/bin/wait-for-postgres.sh"]
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]

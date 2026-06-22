@@ -1,0 +1,27 @@
+.confidence-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-family: var(--font-mono);
+}
+
+.confidence-badge i { font-size: 13px; }
+
+.confidence-badge--high {
+  background: rgba(46, 94, 84, 0.1);
+  color: var(--positive);
+}
+
+.confidence-badge--medium {
+  background: rgba(193, 130, 42, 0.12);
+  color: var(--amber-600);
+}
+
+.confidence-badge--low {
+  background: rgba(150, 60, 54, 0.1);
+  color: var(--negative);
+}

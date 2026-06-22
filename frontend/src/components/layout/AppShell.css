@@ -1,0 +1,23 @@
+.app-shell {
+  display: flex;
+  min-height: 100vh;
+  background: var(--bg-app);
+}
+
+.app-shell__content {
+  flex: 1;
+  min-width: 0;
+  overflow-y: auto;
+}
+
+.app-shell__inner {
+  max-width: 1240px;
+  margin: 0 auto;
+  padding: 32px 36px 64px;
+}
+
+@media (max-width: 900px) {
+  .app-shell { flex-direction: column; }
+  .sidebar { width: 100%; height: auto; position: relative; }
+  .app-shell__inner { padding: 20px; }
+}

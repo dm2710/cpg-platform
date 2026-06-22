@@ -1,0 +1,1 @@
+"""Alembic migrations script template."""

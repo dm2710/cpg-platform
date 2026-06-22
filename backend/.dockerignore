@@ -1,0 +1,28 @@
+# Never copy .env files into the image
+# Docker-compose injects the correct env vars at runtime
+.env
+.env.*
+!.env.example
+
+# Python artifacts
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Test / coverage artifacts
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Git
+.gitignore
+
+# Docker build context bloat
+*.zip
+*.tar.gz

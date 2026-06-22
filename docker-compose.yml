@@ -1,0 +1,185 @@
+services:
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: cpg_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER:     cpg
+      POSTGRES_PASSWORD: cpg_secret
+      POSTGRES_DB:       cpg_platform
+    ports:
+      - "5433:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./backend/db/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cpg -d cpg_platform"]
+      interval: 3s
+      timeout: 5s
+      retries: 30
+      start_period: 15s
+    networks:
+      - cpg_net
+
+  api:
+    build:
+      context: ./backend
+      dockerfile: docker/Dockerfile.api
+    container_name: cpg_api
+    restart: on-failure:5
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL:       postgresql+psycopg2://cpg:cpg_secret@postgres:5432/cpg_platform
+      ASYNC_DATABASE_URL: postgresql+asyncpg://cpg:cpg_secret@postgres:5432/cpg_platform
+      POSTGRES_HOST:      postgres
+      POSTGRES_USER:      cpg
+      POSTGRES_DB:        cpg_platform
+      ENVIRONMENT:        development
+      LOG_LEVEL:          INFO
+      # SECURITY: change this to a long random value before any real
+      # deployment. It signs every JWT issued by the API -- anyone who
+      # has it can mint valid tokens for any user/role. Generate one
+      # with: python -c "import secrets; print(secrets.token_urlsafe(48))"
+      SECRET_KEY:          dev-secret-change-in-production
+      
+      # Default admin credentials — created automatically on first boot.
+      # Change ADMIN_PASSWORD before any real deployment.
+      SEED_ADMIN:          "true"
+      ADMIN_EMAIL:         "admin@cpgplatform.com"
+      ADMIN_PASSWORD:      "admin1234"
+
+      # CORS -- which frontend origins may call this API. Comma-separated;
+      # parsed by pydantic-settings into a list.
+      CORS_ALLOWED_ORIGINS: '["http://localhost:5173"]'
+
+      # Automated retraining
+      RETRAINING_ENABLED:   "true"
+      RETRAINING_CRON:      "0 3 * * *"
+      RETRAINING_DRIFT_MAPE_THRESHOLD: "20.0"
+      RETRAINING_MIN_NEW_ROWS: "50"
+
+      # OpenTelemetry -- send traces/metrics to the local collector.
+      # Leave OTEL_EXPORTER_OTLP_ENDPOINT unset to disable export
+      # entirely (the SDK falls back to a no-op provider).
+      OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-collector:4317"
+      OTEL_SERVICE_NAME:           "cpg-api"
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "-s", "http://localhost:8000/api/v1/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 60s
+    networks:
+      - cpg_net
+
+  web:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: cpg_web
+    restart: on-failure:5
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "5173:80"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:80"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+    networks:
+      - cpg_net
+
+  test:
+    build:
+      context: ./backend
+      dockerfile: docker/Dockerfile.api
+    container_name: cpg_test
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL:       postgresql+psycopg2://cpg:cpg_secret@postgres:5432/cpg_platform_test
+      ASYNC_DATABASE_URL: postgresql+asyncpg://cpg:cpg_secret@postgres:5432/cpg_platform_test
+      POSTGRES_HOST:      postgres
+      POSTGRES_USER:      cpg
+      POSTGRES_DB:        cpg_platform_test
+      ENVIRONMENT:        test
+      SECRET_KEY:         test-secret-not-for-production
+      # Scheduler disabled in tests -- background training jobs firing
+      # during the test suite would be slow and non-deterministic.
+      RETRAINING_ENABLED: "false"
+      SEED_ADMIN:         "false"
+    networks:
+      - cpg_net
+    command: ["pytest", "app/tests/", "-v", "--tb=short"]
+    profiles:
+      - test
+
+  # ── Observability stack ──────────────────────────────────
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.110.0
+    container_name: cpg_otel_collector
+    restart: unless-stopped
+    command: ["--config=/etc/otel-collector-config.yaml"]
+    volumes:
+      - ./observability/otel-collector/otel-collector-config.yaml:/etc/otel-collector-config.yaml:ro
+    ports:
+      - "4317:4317"   # OTLP gRPC
+      - "4318:4318"   # OTLP HTTP
+      - "8889:8889"   # Prometheus scrape endpoint
+    networks:
+      - cpg_net
+
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    container_name: cpg_prometheus
+    restart: unless-stopped
+    volumes:
+      - ./observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=15d"
+    ports:
+      - "9090:9090"
+    networks:
+      - cpg_net
+
+  grafana:
+    image: grafana/grafana:11.2.0
+    container_name: cpg_grafana
+    restart: unless-stopped
+    depends_on:
+      - prometheus
+    environment:
+      # SECURITY: change this before any real deployment.
+      GF_SECURITY_ADMIN_USER:     admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP:     "false"
+    volumes:
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana_data:/var/lib/grafana
+    ports:
+      - "3000:3000"
+    networks:
+      - cpg_net
+
+volumes:
+  pgdata:
+  prometheus_data:
+  grafana_data:
+
+networks:
+  cpg_net:
+    driver: bridge
