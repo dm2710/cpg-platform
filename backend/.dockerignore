@@ -21,6 +21,7 @@ build/
 htmlcov/
 
 # Git
+.git/
 .gitignore
 
 # Docker build context bloat

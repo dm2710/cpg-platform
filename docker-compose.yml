@@ -44,7 +44,8 @@ services:
       # has it can mint valid tokens for any user/role. Generate one
       # with: python -c "import secrets; print(secrets.token_urlsafe(48))"
       SECRET_KEY:          dev-secret-change-in-production
-      
+      DEEPSEEK_API_KEY:    your-deepseek-key-here
+
       # Default admin credentials — created automatically on first boot.
       # Change ADMIN_PASSWORD before any real deployment.
       SEED_ADMIN:          "true"

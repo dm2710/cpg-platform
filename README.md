@@ -1,129 +1,180 @@
-# CPG Predictive Intelligence Platform
+# CPG Platform — Revenue Intelligence Dashboard
 
-Full-stack revenue analytics platform: ingestion, forecasting, AI
-insights, and a business dashboard — all four phases in one repo.
+Full-stack demand forecasting and analytics platform for Consumer Packaged Goods teams. Covers data ingestion, revenue analytics, ML-based forecasting, AI-powered insights, and conversational analytics — all running locally via Docker Compose.
 
-```
-cpg-platform-full/
-├── docker-compose.yml      ← starts everything: postgres + api + web
-├── .env.example
-├── backend/                ← FastAPI + PostgreSQL (Phases 1–3 + Phase 4 API additions)
-│   ├── app/
-│   ├── db/
-│   ├── docker/
-│   └── pyproject.toml
-└── frontend/                ← React + Vite dashboard (Phase 4 UI)
-    ├── src/
-    ├── Dockerfile
-    ├── nginx.conf
-    └── package.json
-```
+---
 
 ## Quick start
 
+### Prerequisites
+
+- Docker Desktop ≥ 4.x
+- Python ≥ 3.11 (for the data-loading script only)
+- `httpx` Python package: `pip install httpx`
+
+### 1. Clone and configure
+
 ```bash
-docker compose up --build
+git clone <repo-url>
+cd cpg-platform
 ```
 
-That single command builds and starts three containers:
+Open `docker-compose.yml` and set your DeepSeek API key (required for AI Insights and Ask AI tabs):
 
-| Service | URL | What it is |
+```yaml
+DEEPSEEK_API_KEY: "sk-your-key-here"   # get one at platform.deepseek.com
+```
+
+### 2. Build and start
+
+```bash
+docker compose build --no-cache
+docker compose up -d
+```
+
+Wait ~60 seconds for all services to become healthy. Check status:
+
+```bash
+docker compose ps
+```
+
+All services should show `healthy` or `Up`. The API health endpoint:
+
+```bash
+curl http://localhost:8000/api/v1/health
+# → {"status": "ok", ...}
+```
+
+### 3. Load synthetic data
+
+```bash
+python backend/scripts/generate_synthetic_data.py --train --forecast
+```
+
+This generates 11,250 transaction records (5 categories × 5 regions × 450 days), pushes them through the ingestion pipeline, trains a LightGBM model per segment, and generates 30-day forecasts.
+
+Expected output:
+```
+Generated 11,250 records (5 categories × 5 regions × 450 days)
+  Batch 1/12: 938 accepted, 0 rejected, 0 duplicates
+  ...
+Training complete: 26 segments trained, avg MAPE 10.3%
+Forecast complete: 26 segments forecasted
+```
+
+### 4. Open the dashboard
+
+```
+http://localhost:5173
+```
+
+---
+
+## Services
+
+| Service | URL | Description |
 |---|---|---|
-| `web` | http://localhost:5173 | The dashboard (nginx serving the Vite build, proxying `/api` to `api`) |
-| `api` | http://localhost:8000 | FastAPI backend — also browsable at `/docs` |
-| `postgres` | `localhost:5433` | Database (exposed for local tools like psql/DBeaver) |
+| Dashboard | http://localhost:5173 | React frontend |
+| API | http://localhost:8000 | FastAPI backend |
+| API docs | http://localhost:8000/docs | Swagger UI |
+| Grafana | http://localhost:3000 | Observability dashboards (admin / admin) |
+| Prometheus | http://localhost:9090 | Metrics |
 
-Set your DeepSeek key before starting — edit `DEEPSEEK_API_KEY` in
-`docker-compose.yml` under the `api` service. The AI Insights and Ask
-AI tabs in the dashboard won't work without it.
+---
 
-```bash
-docker compose down -v   # full reset, including the database volume
+## Project structure
+
+```
+cpg-platform/
+├── docker-compose.yml
+├── backend/
+│   ├── app/
+│   │   ├── api/v1/endpoints/     # FastAPI routers
+│   │   ├── forecasting/          # ML pipeline (features, training, prediction)
+│   │   ├── insights/             # AI insight engines + LLM client
+│   │   ├── pipeline/             # Ingestion orchestrator
+│   │   ├── security/             # Auth + RBAC (no-op in demo mode)
+│   │   └── tests/                # Unit + integration tests
+│   ├── db/
+│   │   ├── init/                 # SQL schema files (run on fresh DB)
+│   │   └── schema*.sql           # Individual schema files
+│   ├── scripts/
+│   │   ├── generate_synthetic_data.py
+│   │   └── seed_admin.py
+│   ├── docker/
+│   │   └── Dockerfile.api
+│   └── pyproject.toml
+├── frontend/
+│   ├── src/
+│   │   ├── pages/                # Dashboard pages
+│   │   ├── components/           # Charts, layout, common UI
+│   │   ├── context/              # FilterContext
+│   │   ├── hooks/                # useAsync
+│   │   └── api/client.js         # Axios wrapper
+│   ├── Dockerfile
+│   └── nginx.conf
+├── observability/
+│   ├── prometheus/prometheus.yml
+│   └── grafana/
+└── docs/
+    └── adr/                      # Architecture Decision Records
 ```
 
-## Loading sample data
-
-The dashboard starts empty — there's no data until you load some.
-A generator script seeds ~15 months of realistic synthetic CPG
-transaction history (5 categories x 5 regions) through the real
-ingestion API, so every tab has something genuine to show: revenue
-trends, seasonality, a deliberate Dairy demand decline for testing
-Root Cause Analysis, and region-to-region variation for Regional
-Analysis.
-
-```bash
-# With the stack already running (docker compose up)
-cd backend
-pip install httpx --break-system-packages   # the script's only dependency
-python scripts/generate_synthetic_data.py
-
-# Also train forecasting models and generate forecasts in one go:
-python scripts/generate_synthetic_data.py --train --forecast
-```
-
-Takes well under a minute for the data load; training adds a few
-more minutes depending on your machine. Run it again any time to
-load fresh history (duplicate transactions are automatically
-deduped by the pipeline, so re-running is safe).
-
-Options:
-```bash
-python scripts/generate_synthetic_data.py --help
-python scripts/generate_synthetic_data.py --days 730        # ~2 years instead of ~15 months
-python scripts/generate_synthetic_data.py --api-url http://localhost:8000
-```
-
-What to look at afterward:
-- **Revenue overview** — trend chart should show a clear ~18% growth
-  arc across the period plus weekly seasonality
-- **Regional analysis** — North America strongest, Middle East weakest
-- **Category analysis** — Snacks and Beverages show summer/holiday peaks
-- **Forecast explorer** — needs `--train --forecast` to have run first
-- **AI insights / Ask AI** — try "Why is dairy forecasted to decline?"
-  or open Root Cause Analysis with that same question; the generator
-  baked in a real ~22% Dairy demand dip over the last 21 days
+---
 
 ## Running tests
 
+Tests require the postgres container to be running:
+
 ```bash
+docker compose up -d postgres
 docker compose run --rm test
 ```
 
-## Local development (without Docker)
+Or run directly with pytest (requires local postgres on port 5433):
 
-**Backend:**
 ```bash
 cd backend
-pip install -e ".[dev]" --break-system-packages
-export DATABASE_URL=postgresql+psycopg2://cpg:cpg_secret@localhost:5433/cpg_platform
-uvicorn app.main:app --reload
+pip install -e ".[dev]"
+pytest app/tests/ -v --tb=short
 ```
 
-**Frontend** (in a second terminal, with the backend already running
-on port 8000):
+---
+
+## Re-seeding after a database reset
+
+If you run `docker compose down -v` (which deletes volumes), re-run:
+
 ```bash
-cd frontend
-npm install
-npm run dev
+docker compose up -d
+sleep 60
+python backend/scripts/generate_synthetic_data.py --train --forecast
 ```
-Opens at http://localhost:5173 with hot reload; Vite proxies `/api`
-straight to `localhost:8000`.
 
-## What's inside
+To manually refresh the aggregate table without re-loading data:
 
-- **Phase 1 — Data foundation**: six-stage ingestion pipeline (schema
-  drift resolution, validation, dedup, FX/unit normalization,
-  late-arrival handling, persistence), SCD2 SKU catalog, analytics API.
-- **Phase 2 — Forecasting**: Prophet + LightGBM models, feature store,
-  walk-forward CV, training/prediction pipelines, accuracy tracking.
-- **Phase 3 — AI insights**: five DeepSeek-powered analysis engines
-  (trend summarization, root cause, forecast explanation, revenue
-  drivers, executive summary), all grounded in live PostgreSQL data
-  with a confidence score and a SHA-256 TTL cache.
-- **Phase 4 — Business interface**: the React dashboard in
-  `frontend/`, plus two backend additions — session-based
-  conversational analytics (`/api/v1/conversation`) and PDF/CSV report
-  export (`/api/v1/reports`).
+```bash
+docker exec cpg_postgres psql -U cpg -d cpg_platform -c \
+  "SELECT refresh_agg_revenue_daily(NULL);"
+```
 
-See `frontend/README.md` for dashboard-specific details and
-`backend/` for the API source.
+---
+
+## Known limitations (demo build)
+
+- **No authentication** — all endpoints are open. See `docs/adr/002-auth-removed-for-demo.md`
+- **Prophet removed** — LightGBM only. See `docs/adr/001-lightgbm-only-no-prophet.md`
+- **No CI pipeline** — Docker Compose only. See `docs/cicd-plan.md` for the production pipeline design
+- **DeepSeek required** for AI features — without a valid key, insight endpoints return a friendly "not configured" message instead of erroring
+
+---
+
+## Architecture decisions
+
+See [`docs/adr/`](docs/adr/) for all recorded decisions:
+
+- [ADR 001](docs/adr/001-lightgbm-only-no-prophet.md) — LightGBM only; Prophet removed
+- [ADR 002](docs/adr/002-auth-removed-for-demo.md) — Auth removed for demo environment
+- [ADR 003](docs/adr/003-forecast-fallback-chain.md) — Forecast fallback chain for sparse segments
+- [ADR 004](docs/adr/004-aggregate-refresh-strategy.md) — Always refresh agg_revenue_daily after ingestion
+- [ADR 005](docs/adr/005-batch-predict-endpoint.md) — Use /predict/batch for the Generate forecast button
