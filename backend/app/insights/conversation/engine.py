@@ -313,6 +313,67 @@ class ConversationEngine:
         if (category_id is not None or region_id is not None) and "revenue" not in ctx:
             ctx["revenue"] = build_revenue_context(self._db, category_id, region_id, lookback_days=90)
 
+        # When asking about a decline or trend for a specific category/region,
+        # add an explicit week-by-week breakdown so the LLM can see the trajectory
+        # clearly rather than inferring it from aggregate totals.
+        if category_id is not None and any(w in q for w in [
+            "decline", "fell", "drop", "down", "decrease", "worse", "weak",
+            "trend", "trajectory", "change", "performance"
+        ]):
+            from sqlalchemy import text as _text
+            flt_parts = ["a.category_id = :cat"]
+            flt_params = {"cat": category_id}
+            if region_id is not None:
+                flt_parts.append("a.region_id = :region")
+                flt_params["region"] = region_id
+            where_clause = " AND ".join(flt_parts)
+
+            weekly = self._db.execute(_text(f"""
+                SELECT
+                    DATE_TRUNC('week', agg_date)::date AS week_start,
+                    SUM(total_revenue)                   AS weekly_revenue,
+                    AVG(total_revenue)                   AS daily_avg
+                FROM agg_revenue_daily a
+                WHERE {where_clause}
+                  AND agg_date >= CURRENT_DATE - 63
+                GROUP BY DATE_TRUNC('week', agg_date)
+                ORDER BY week_start
+            """), flt_params).mappings().all()
+
+            ctx["weekly_trend_last_9_weeks"] = [
+                {
+                    "week_start":    str(r["week_start"]),
+                    "weekly_revenue": round(float(r["weekly_revenue"]), 2),
+                    "daily_avg":      round(float(r["daily_avg"]), 2),
+                }
+                for r in weekly
+            ]
+
+            # Also add last-21-days vs prior-21-days explicit comparison
+            recent = self._db.execute(_text(f"""
+                SELECT
+                    SUM(CASE WHEN agg_date >= CURRENT_DATE - 21 THEN total_revenue ELSE 0 END) AS last_21d,
+                    SUM(CASE WHEN agg_date BETWEEN CURRENT_DATE - 42 AND CURRENT_DATE - 22
+                        THEN total_revenue ELSE 0 END) AS prior_21d
+                FROM agg_revenue_daily a
+                WHERE {where_clause}
+            """), flt_params).mappings().first()
+
+            if recent:
+                last_21d  = float(recent["last_21d"] or 0)
+                prior_21d = float(recent["prior_21d"] or 0)
+                ctx["recent_decline_analysis"] = {
+                    "last_21_days_revenue":  round(last_21d, 2),
+                    "prior_21_days_revenue": round(prior_21d, 2),
+                    "change_pct": round((last_21d - prior_21d) / prior_21d * 100, 1) if prior_21d else None,
+                    "interpretation": (
+                        f"Revenue is DOWN {round((prior_21d - last_21d) / prior_21d * 100, 1)}% "
+                        f"vs the prior 21-day period (${round(prior_21d,0):,.0f} -> ${round(last_21d,0):,.0f})"
+                        if last_21d < prior_21d and prior_21d > 0
+                        else "Revenue is stable or increasing vs the prior 21-day period"
+                    ),
+                }
+
         if not ctx:
             ctx["revenue"] = build_revenue_context(self._db, None, None, lookback_days=30)
 

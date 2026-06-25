@@ -89,6 +89,10 @@ def cache_set(
     category_id:  Optional[int] = None,
     region_id:    Optional[int] = None,
 ) -> None:
+    # Never cache error/not-configured responses — they should be retried
+    # once the configuration is fixed, not served from cache indefinitely.
+    if result.model_used == "none" or result.confidence == 0.0:
+        return
     key     = _make_key(insight_type, segment_key, params)
     ttl_h   = _TTL_HOURS.get(insight_type, 3)
     expires = datetime.now(timezone.utc) + timedelta(hours=ttl_h)
