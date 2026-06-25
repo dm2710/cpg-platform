@@ -185,31 +185,68 @@ class ConversationEngine:
             "latency_ms":   latency,
         }
 
-    # ── DB context builder (keyword routing) ──────────────
 
-    def _build_db_context(self, question: str, category_id: Optional[int], region_id: Optional[int]) -> dict:
-        q   = question.lower()
+    # DB context builder (keyword routing)
+
+    def _resolve_names_in_question(
+        self, question: str, category_id, region_id
+    ):
+        """
+        If a category or region name is mentioned in the question, resolve it
+        to its DB id. This means asking "describe decline in Dairy" always pulls
+        Dairy-specific revenue data even when no sidebar filter is active.
+        """
+        q = question.lower()
+
+        if category_id is None:
+            rows = self._db.execute(
+                text("SELECT category_id, LOWER(category_name) AS name FROM dim_product_category")
+            ).mappings().all()
+            for row in rows:
+                if row["name"] in q:
+                    category_id = row["category_id"]
+                    break
+
+        if region_id is None:
+            rows = self._db.execute(
+                text("SELECT region_id, LOWER(region_name) AS name FROM dim_region")
+            ).mappings().all()
+            for row in rows:
+                if row["name"] in q:
+                    region_id = row["region_id"]
+                    break
+
+        return category_id, region_id
+
+    def _build_db_context(self, question: str, category_id, region_id) -> dict:
+        q = question.lower()
+
+        # Resolve any category/region names mentioned in the question to their IDs
+        category_id, region_id = self._resolve_names_in_question(question, category_id, region_id)
+
         ctx: dict = {}
 
-        if any(w in q for w in ["revenue", "sales", "trend", "grew", "growth", "decline", "fell", "quarter",
-                                 "month", "year", "performance"]):
+        if any(w in q for w in ["revenue", "sales", "trend", "grew", "growth", "decline",
+                                 "fell", "quarter", "month", "year", "performance"]):
             ctx["revenue"] = build_revenue_context(self._db, category_id, region_id, lookback_days=90)
 
-        if any(w in q for w in ["forecast", "predict", "next quarter", "future", "outlook", "will generate", "expected"]):
+        if any(w in q for w in ["forecast", "predict", "next quarter", "future", "outlook",
+                                 "will generate", "expected"]):
             ctx["forecast"] = build_forecast_context(self._db, category_id, region_id, horizon_days=90)
 
         if any(w in q for w in ["promo", "campaign", "discount", "marketing", "offer"]):
             ctx["signals"] = build_signal_context(self._db, category_id, region_id)
 
-        if any(w in q for w in ["compare", "vs", "versus", "snack", "beverage", "dairy", "category",
-                                 "categories", "highest", "lowest"]):
+        if any(w in q for w in ["compare", "vs", "versus", "snack", "beverage", "dairy",
+                                 "category", "categories", "highest", "lowest"]):
             rows = self._db.execute(text("""
                 SELECT dpc.category_name,
                        SUM(a.total_revenue) AS revenue_90d,
                        SUM(CASE WHEN a.agg_date >= CURRENT_DATE-30 THEN a.total_revenue ELSE 0 END) AS last_30d,
-                       SUM(CASE WHEN a.agg_date BETWEEN CURRENT_DATE-60 AND CURRENT_DATE-31 THEN a.total_revenue ELSE 0 END) AS prior_30d
+                       SUM(CASE WHEN a.agg_date BETWEEN CURRENT_DATE-60 AND CURRENT_DATE-31
+                           THEN a.total_revenue ELSE 0 END) AS prior_30d
                 FROM agg_revenue_daily a
-                JOIN dim_product_category dpc ON dpc.category_id=a.category_id
+                JOIN dim_product_category dpc ON dpc.category_id = a.category_id
                 WHERE a.agg_date >= CURRENT_DATE - 90
                 GROUP BY dpc.category_name ORDER BY revenue_90d DESC
             """)).mappings().all()
@@ -218,8 +255,9 @@ class ConversationEngine:
                     "category":    r["category_name"],
                     "revenue_90d": round(float(r["revenue_90d"]), 2),
                     "last_30d":    round(float(r["last_30d"]), 2),
-                    "mom_pct":     round((float(r["last_30d"]) - float(r["prior_30d"])) / float(r["prior_30d"]) * 100, 1)
-                                   if float(r["prior_30d"]) else None,
+                    "mom_pct":     round(
+                        (float(r["last_30d"]) - float(r["prior_30d"])) / float(r["prior_30d"]) * 100, 1
+                    ) if float(r["prior_30d"]) else None,
                 }
                 for r in rows
             ]
@@ -230,9 +268,10 @@ class ConversationEngine:
                 SELECT dr.region_name,
                        SUM(a.total_revenue) AS revenue_90d,
                        SUM(CASE WHEN a.agg_date >= CURRENT_DATE-30 THEN a.total_revenue ELSE 0 END) AS last_30d,
-                       SUM(CASE WHEN a.agg_date BETWEEN CURRENT_DATE-60 AND CURRENT_DATE-31 THEN a.total_revenue ELSE 0 END) AS prior_30d
+                       SUM(CASE WHEN a.agg_date BETWEEN CURRENT_DATE-60 AND CURRENT_DATE-31
+                           THEN a.total_revenue ELSE 0 END) AS prior_30d
                 FROM agg_revenue_daily a
-                JOIN dim_region dr ON dr.region_id=a.region_id
+                JOIN dim_region dr ON dr.region_id = a.region_id
                 WHERE a.agg_date >= CURRENT_DATE - 90
                 GROUP BY dr.region_name ORDER BY revenue_90d DESC
             """)).mappings().all()
@@ -241,8 +280,9 @@ class ConversationEngine:
                     "region":      r["region_name"],
                     "revenue_90d": round(float(r["revenue_90d"]), 2),
                     "last_30d":    round(float(r["last_30d"]), 2),
-                    "mom_pct":     round((float(r["last_30d"]) - float(r["prior_30d"])) / float(r["prior_30d"]) * 100, 1)
-                                   if float(r["prior_30d"]) else None,
+                    "mom_pct":     round(
+                        (float(r["last_30d"]) - float(r["prior_30d"])) / float(r["prior_30d"]) * 100, 1
+                    ) if float(r["prior_30d"]) else None,
                 }
                 for r in rows
             ]
@@ -251,9 +291,10 @@ class ConversationEngine:
             rows = self._db.execute(text("""
                 SELECT dpc.category_name,
                        SUM(CASE WHEN a.agg_date >= CURRENT_DATE-30 THEN a.total_revenue ELSE 0 END) AS last_30d,
-                       SUM(CASE WHEN a.agg_date BETWEEN CURRENT_DATE-60 AND CURRENT_DATE-31 THEN a.total_revenue ELSE 0 END) AS prior_30d
+                       SUM(CASE WHEN a.agg_date BETWEEN CURRENT_DATE-60 AND CURRENT_DATE-31
+                           THEN a.total_revenue ELSE 0 END) AS prior_30d
                 FROM agg_revenue_daily a
-                JOIN dim_product_category dpc ON dpc.category_id=a.category_id
+                JOIN dim_product_category dpc ON dpc.category_id = a.category_id
                 WHERE a.agg_date >= CURRENT_DATE - 90
                 GROUP BY dpc.category_name
             """)).mappings().all()
@@ -261,14 +302,19 @@ class ConversationEngine:
                 {
                     "category": r["category_name"],
                     "last_30d": round(float(r["last_30d"]), 2),
-                    "mom_pct":  round((float(r["last_30d"]) - float(r["prior_30d"])) / float(r["prior_30d"]) * 100, 1)
-                                if float(r["prior_30d"]) else None,
+                    "mom_pct":  round(
+                        (float(r["last_30d"]) - float(r["prior_30d"])) / float(r["prior_30d"]) * 100, 1
+                    ) if float(r["prior_30d"]) else None,
                 }
                 for r in rows
             ], key=lambda x: (x["mom_pct"] or 0), reverse=True)
 
+        # Always include segment-specific revenue when a name was resolved from the question
+        if (category_id is not None or region_id is not None) and "revenue" not in ctx:
+            ctx["revenue"] = build_revenue_context(self._db, category_id, region_id, lookback_days=90)
+
         if not ctx:
-            ctx["revenue"] = build_revenue_context(self._db, category_id, region_id, lookback_days=30)
+            ctx["revenue"] = build_revenue_context(self._db, None, None, lookback_days=30)
 
         return ctx
 
@@ -284,7 +330,7 @@ class ConversationEngine:
         session_id: str,
         role:       str,
         content:    str,
-        confidence: Optional[float] = None,
+        confidence=None,
         tokens:     int = 0,
     ) -> None:
         self._db.execute(
