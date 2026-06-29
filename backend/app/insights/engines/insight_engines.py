@@ -18,11 +18,13 @@ Engines:
 
 from __future__ import annotations
 
+import json
 import re
 import time
 from dataclasses import dataclass, field
 from typing import Optional
 
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.core.logging import get_logger
@@ -170,12 +172,97 @@ class RootCauseAnalysisEngine:
     ) -> InsightResult:
         if not is_llm_configured():
             return _not_configured_result(self.insight_type)
-        t0   = time.monotonic()
-        seg  = resolve_segment_label(self._db, category_id, region_id)
-        rev  = build_revenue_context(self._db, category_id, region_id, lookback_days)
-        sig  = build_signal_context(self._db, category_id, region_id)
+        t0 = time.monotonic()
+
+        # If no filter is set, try to resolve a category/region name
+        # from the change_description text itself (e.g. "decline in Dairy").
+        if category_id is None:
+            q = change_description.lower()
+            rows = self._db.execute(
+                text("SELECT category_id, LOWER(category_name) AS name FROM dim_product_category")
+            ).mappings().all()
+            for row in rows:
+                if row["name"] in q:
+                    category_id = row["category_id"]
+                    break
+
+        if region_id is None:
+            q = change_description.lower()
+            rows = self._db.execute(
+                text("SELECT region_id, LOWER(region_name) AS name FROM dim_region")
+            ).mappings().all()
+            for row in rows:
+                if row["name"] in q:
+                    region_id = row["region_id"]
+                    break
+
+        seg = resolve_segment_label(self._db, category_id, region_id)
+        rev = build_revenue_context(self._db, category_id, region_id, lookback_days)
+        sig = build_signal_context(self._db, category_id, region_id)
+
+        # Build explicit week-by-week and recent-vs-prior breakdown so the LLM
+        # has unambiguous evidence of the decline rather than having to infer it
+        # from aggregate totals.
+        decline_ctx = {}
+        if category_id is not None or region_id is not None:
+            flt_parts, flt_params = [], {}
+            if category_id is not None:
+                flt_parts.append("a.category_id = :cat")
+                flt_params["cat"] = category_id
+            if region_id is not None:
+                flt_parts.append("a.region_id = :region")
+                flt_params["region"] = region_id
+            where_clause = " AND ".join(flt_parts)
+
+            weekly = self._db.execute(
+                text(f"""
+                    SELECT
+                        DATE_TRUNC('week', agg_date)::date AS week_start,
+                        SUM(total_revenue)                 AS weekly_revenue,
+                        AVG(total_revenue)                 AS daily_avg
+                    FROM agg_revenue_daily a
+                    WHERE {where_clause}
+                      AND agg_date >= CURRENT_DATE - 63
+                    GROUP BY DATE_TRUNC('week', agg_date)
+                    ORDER BY week_start
+                """), flt_params
+            ).mappings().all()
+
+            decline_ctx["weekly_trend_last_9_weeks"] = [
+                {
+                    "week_start":     str(r["week_start"]),
+                    "weekly_revenue": round(float(r["weekly_revenue"]), 2),
+                    "daily_avg":      round(float(r["daily_avg"]), 2),
+                }
+                for r in weekly
+            ]
+
+            recent = self._db.execute(
+                text(f"""
+                    SELECT
+                        SUM(CASE WHEN agg_date >= CURRENT_DATE - 21
+                            THEN total_revenue ELSE 0 END) AS last_21d,
+                        SUM(CASE WHEN agg_date BETWEEN CURRENT_DATE - 42 AND CURRENT_DATE - 22
+                            THEN total_revenue ELSE 0 END) AS prior_21d
+                    FROM agg_revenue_daily a
+                    WHERE {where_clause}
+                """), flt_params
+            ).mappings().first()
+
+            if recent:
+                last_21d  = float(recent["last_21d"] or 0)
+                prior_21d = float(recent["prior_21d"] or 0)
+                decline_ctx["last_21_days_vs_prior"] = {
+                    "last_21_days_revenue":  round(last_21d, 2),
+                    "prior_21_days_revenue": round(prior_21d, 2),
+                    "change_pct": round((last_21d - prior_21d) / prior_21d * 100, 1) if prior_21d else None,
+                    "direction": "DECLINE" if last_21d < prior_21d else "GROWTH",
+                }
 
         user_prompt = build_root_cause_prompt(seg, change_description, rev, sig)
+        if decline_ctx:
+            user_prompt += f"\n\nADDITIONAL TREND DATA (use this to confirm the decline):\n{json.dumps(decline_ctx, indent=2, default=str)}"
+
         resp = await self._client.complete(
             system_prompt=ROOT_CAUSE_SYSTEM,
             user_prompt=user_prompt,
@@ -188,7 +275,7 @@ class RootCauseAnalysisEngine:
             insight_type=self.insight_type,
             insight_text=clean,
             confidence=confidence,
-            structured_data={"segment_key": seg, "revenue_context": rev, "signal_context": sig},
+            structured_data={"segment_key": seg, "revenue_context": rev, "decline_context": decline_ctx},
             model_used=resp.model,
             tokens_total=resp.tokens_total,
             latency_ms=int((time.monotonic() - t0) * 1000),

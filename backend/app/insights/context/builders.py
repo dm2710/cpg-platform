@@ -138,23 +138,42 @@ def build_forecast_context(
 ) -> dict:
     """Forecast horizon with CI bands and deployed-model accuracy."""
     from app.forecasting.features.engineer import segment_key
+
     seg = segment_key(category_id, region_id)
 
-    forecasts = db.execute(text("""
-        SELECT forecast_date, model_name, predicted_revenue,
-               lower_80, upper_80, actual_revenue, error_pct
-        FROM forecast_results
-        WHERE segment_key = :seg
-          AND forecast_date BETWEEN CURRENT_DATE AND CURRENT_DATE + :horizon
-        ORDER BY forecast_date
-    """), {"seg": seg, "horizon": horizon_days}).mappings().all()
+    def _fetch_forecasts(sk: str) -> list:
+        return db.execute(text("""
+            SELECT DISTINCT ON (forecast_date)
+                   forecast_date, model_name, predicted_revenue,
+                   lower_80, upper_80, actual_revenue, error_pct
+            FROM forecast_results
+            WHERE segment_key = :seg
+              AND forecast_date BETWEEN CURRENT_DATE AND CURRENT_DATE + :horizon
+            ORDER BY forecast_date, generated_at DESC
+        """), {"seg": sk, "horizon": horizon_days}).mappings().all()
+
+    # Try exact segment first; fall back to global if no rows
+    forecasts = _fetch_forecasts(seg)
+    used_seg = seg
+    if not forecasts and seg != "global":
+        forecasts = _fetch_forecasts("global")
+        used_seg = "global"
 
     model_info = db.execute(text("""
-        SELECT model_name, mape, mae, r2, trained_at
+        SELECT model_name, mape, mae, trained_at
         FROM model_registry
         WHERE segment_key = :seg AND status = 'deployed'
         ORDER BY mape ASC NULLS LAST LIMIT 1
-    """), {"seg": seg}).mappings().first()
+    """), {"seg": used_seg}).mappings().first()
+
+    # Fall back to any deployed model if exact segment has none
+    if not model_info:
+        model_info = db.execute(text("""
+            SELECT model_name, mape, mae, trained_at
+            FROM model_registry
+            WHERE status = 'deployed'
+            ORDER BY mape ASC NULLS LAST LIMIT 1
+        """)).mappings().first()
 
     recent_acc = db.execute(text("""
         SELECT AVG(fa.mape) AS avg_mape, AVG(fa.bias) AS avg_bias, COUNT(*) AS n
@@ -163,20 +182,20 @@ def build_forecast_context(
         WHERE fa.segment_key = :seg
           AND fa.evaluation_date >= CURRENT_DATE - 30
           AND mr.status = 'deployed'
-    """), {"seg": seg}).mappings().first()
+    """), {"seg": used_seg}).mappings().first()
 
     total = sum(float(r["predicted_revenue"]) for r in forecasts)
 
     return {
-        "segment_key":            seg,
+        "segment_key":            used_seg,
         "horizon_days":           horizon_days,
         "total_forecast_revenue": round(total, 2),
         "avg_daily_forecast":     round(total / max(len(forecasts), 1), 2),
+        "num_forecast_days":      len(forecasts),
         "model": {
-            "name":       model_info["model_name"]    if model_info else None,
-            "mape":       float(model_info["mape"])   if model_info and model_info["mape"]  else None,
-            "mae":        float(model_info["mae"])    if model_info and model_info["mae"]   else None,
-            "r2":         float(model_info["r2"])     if model_info and model_info["r2"]    else None,
+            "name":       model_info["model_name"]      if model_info else None,
+            "mape":       float(model_info["mape"])     if model_info and model_info["mape"]  else None,
+            "mae":        float(model_info["mae"])      if model_info and model_info["mae"]   else None,
             "trained_at": str(model_info["trained_at"]) if model_info else None,
         },
         "recent_accuracy": {
@@ -188,10 +207,10 @@ def build_forecast_context(
             {
                 "date":      str(r["forecast_date"]),
                 "predicted": round(float(r["predicted_revenue"]), 2),
-                "lower_80":  round(float(r["lower_80"]), 2) if r["lower_80"] else None,
-                "upper_80":  round(float(r["upper_80"]), 2) if r["upper_80"] else None,
+                "lower_80":  round(float(r["lower_80"]), 2)  if r["lower_80"]       else None,
+                "upper_80":  round(float(r["upper_80"]), 2)  if r["upper_80"]       else None,
                 "actual":    round(float(r["actual_revenue"]), 2) if r["actual_revenue"] else None,
-                "error_pct": round(float(r["error_pct"]), 2) if r["error_pct"] else None,
+                "error_pct": round(float(r["error_pct"]), 2) if r["error_pct"]      else None,
             }
             for r in forecasts
         ],
